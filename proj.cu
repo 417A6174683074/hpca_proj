@@ -11,7 +11,37 @@ __global__ void init_normal(curandState *states){
     }
 }
 
-__device__ void gamma()
+__device__ float gamma( curandState *state, float a )
+{
+    float d = a - 1.f/3.f;
+    float c = 1.f / sqrt(9.f*d);
+    float x, v, u;
+    while( true )
+    {
+        do {
+            x = curand_normal( state );
+            v = 1.f + c*x;
+        }
+        while ( v <= 0.f );
+
+        v = v*v*v;
+        u = curand_uniform( state );
+        if ( u < 1.f - 0.0331*x*x*x*x )
+            return d*v;
+        if ( log( u ) < 0.5f*x*x + d*(1.f - v + log( v )) )
+            return d*v;
+    }
+}
+
+__global__ void testGamma( curandState* states, float a, float* result )
+{
+    int lim = blockDim.x * gridDim.x;
+    for ( int k = 0; k < 1000; ++k )
+    {
+        size_t idx = blockIdx.x * blockDim.x + threadIdx.x + k*lim;
+        result[idx] = gamma( &states[idx], a );
+    }
+}
 
 __global__ void Euler(curandState* G1, curandState* G2, float rho, float* result, float kappa, float theta, float sigma, float sqrtdt, float nvar){
 
@@ -73,7 +103,20 @@ int main(void){
     init_normal<<<NB, NTPB>>>(rv1);
     init_normal<<<NB, NTPB>>>(rv2);
 
-
+// uncomment to verify Gamma distribution
+//    float *distrGPU, *distrCPU;
+//    cudaMalloc( &distrGPU, 1000*tot*sizeof(float) );
+//    distrCPU = (float*)malloc( 1000*tot*sizeof(float) );
+//    testGamma<<<NB, NTPB>>>( rv1, 5, distrGPU );
+//    cudaMemcpy( distrCPU, distrGPU, 1000*tot*sizeof(float), cudaMemcpyDeviceToHost );
+//
+//    FILE* f = fopen( "/tmp/distr.csv", "w" );
+//    assert( f );
+//    for ( size_t i = 0; i < 1000*tot; ++i )
+//    {
+//        fprintf( f, "%f\n", distrCPU[i] );
+//    }
+//    fclose( f );
     
     for (float rho= -0.9; rho<0.9; rho +=0.2){
         float nvar= sqrtf(1 - rho*rho);
