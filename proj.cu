@@ -68,8 +68,9 @@ __device__ float gamma( curandState *state, float a )
     float boost = 1;
     if (a < 1){
         boost= curand_uniform(state);
-        a += 1;
+        
         boost= powf(boost, 1.0/a);
+        a += 1;
     }
 
     float d = a - 1.f/3.f;
