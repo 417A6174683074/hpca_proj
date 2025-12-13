@@ -100,6 +100,63 @@ __global__ void testGamma(float a, float* result )
     }
 }
 
+__global__ void exact(float* result, float* rhos, float* kappas, float* thetas, float* sigmas, float sqrtdt)
+{
+    extern __shared__ float data[];
+    int idx= blockDim.x * blockIdx.x + threadIdx.x;
+
+    float kappa= kappas[blockIdx.x];
+    float sigma= sigmas[blockIdx.x];
+    float theta= thetas[blockIdx.x];
+    float rho= rhos[blockIdx.x];
+    float nvar = sqrtf(1.f - rho*rho);
+
+
+    float v= 0.1;
+    float sigma_square= sigma * sigma;
+    float dt= sqrtdt * sqrtdt;
+    float exp_k= expf(-kappa * dt);
+    float d= 2 * kappa * theta / sigma_square;
+    float lambdaCoeff = 2* kappa * exp_k / (sigma_square * (1 - exp_k));
+    float vI = 0.f;
+
+    curandState localState;
+    curand_init(42, idx, 0, &localState);
+
+    for (float t= 0; t< 1; t+= dt){
+        float lambda= lambdaCoeff * v;
+        float N= curand_poisson(&localState, lambda);
+
+        float vdt = sigma_square * (1 - exp_k) * gamma(&localState, d + N) / (2 * kappa);
+
+        vI += 0.5f*(v + vdt)*dt;
+        v = vdt;
+    }
+
+    float m = -0.5f * vI + (rho/sigma)*(v - 0.1f - kappa*theta + kappa*vI);
+    float Sigma = nvar * sqrtf(vI);
+
+    float S1= expf(m + Sigma*curand_normal(&localState));
+    float res = fmaxf(S1 - 1.0, 0.0);
+
+    data[threadIdx.x] = res;
+    __syncthreads();
+
+    int k= blockDim.x / 2;
+    while (k!=0){
+        if (threadIdx.x < k){
+            data[threadIdx.x] += data[threadIdx.x + k];
+        }
+        __syncthreads();
+        k /= 2;
+    }
+
+    if (threadIdx.x == 0){
+        result[blockIdx.x]= data[0] / blockDim.x;
+    }
+}
+
+
 __global__ void almost(float* result, float *rhos, float* kappas, float* thetas, float* sigmas, float sqrtdt){
 
     extern __shared__ float data[];
@@ -257,6 +314,50 @@ void ex1()
         printf("[Exercise 1] for a value rho of %f we get a result E[(S-1)+]: %f\n", rhos[i], result[i]);
 }
 
+void ex2()
+{
+    float dt= 1.0/1000.0;
+    float sqrtdt= sqrtf(dt);
+    float kappa= 0.5;
+    float theta= 0.1;
+    float sigma= 0.3;
+
+    int NTPB = 1024;
+    int NB = 10;        // for this exercise the number of blocks is the same as the number of values for rho
+    size_t shared = NTPB * sizeof(float);
+
+    std::vector<float> kappas( NB, kappa );
+    std::vector<float> sigmas( NB, sigma );
+    std::vector<float> thetas( NB, theta );
+    std::vector<float> rhos;
+    for ( int irho = 1; irho < NB + 1; ++irho )
+        rhos.push_back((float)irho / (float)NB);
+
+    CudaData cudaData( kappas, sigmas, thetas, rhos );
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    float* gpu_result;
+    cudaMalloc(&gpu_result, NB*sizeof(float));
+    cudaMemset(gpu_result, 0, NB*sizeof(float));
+    cudaEventRecord(start);
+    exact<<<NB, NTPB, shared>>>(gpu_result, cudaData.rho, cudaData.kappa, cudaData.theta, cudaData.sigma, sqrtdt);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float elapsed= 0;
+    cudaEventElapsedTime(&elapsed, start, stop);
+
+    std::vector<float> result( NB );
+    cudaMemcpy(result.data(), gpu_result, NB*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaFree( gpu_result );
+
+    printf("[Exercise 2] elapsed time: %fms\n", elapsed);
+    for ( int i = 0; i < NB; ++i )
+        printf("[Exercise 2] for a value rho of %f we get a result E[(S-1)+]: %f\n", rhos[i], result[i]);
+}
+
 void ex3()
 {
     float dt= 1.0/1000.0;
@@ -347,6 +448,7 @@ void ex3()
 int main(void)
 {
     ex1();
+    ex2();
     ex3();
 
 //##############uncomment to verify Gamma distribution############
