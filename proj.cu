@@ -87,17 +87,15 @@ __device__ float gamma( curandState *state, float a )
 }
 
 
-__global__ void testGamma(float a, float* result )
+/// fill ``result``, each thread fills ``N`` values
+__global__ void testGamma(float a, float N, float* result)
 {
-    int lim = blockDim.x * gridDim.x;
-    int idx0= blockDim.x * blockIdx.x + threadIdx.x;
+    size_t idx = threadIdx.x + blockIdx.x * blockDim.x;
     curandState localState;
-    curand_init(42, idx0, 0, &localState);
-    for ( int k = 0; k < 1000; ++k )
-    {
-        size_t idx = blockIdx.x * blockDim.x + threadIdx.x + k*lim;
-        result[idx] = gamma( &localState, a);
-    }
+    curand_init(42, idx, 0, &localState);
+
+    for ( int k = 0; k < N; ++k )
+        result[idx + k] = gamma( &localState, a);
 }
 
 __global__ void exact(float* result, float* rhos, float* kappas, float* thetas, float* sigmas, float sqrtdt)
@@ -445,32 +443,61 @@ void ex3()
 }
 
 
+void sampleGamma( const char* output )
+{
+    int NTPB = 1024;
+    int NB = 16;
+
+    float *distrGPU;
+    cudaMalloc( &distrGPU, NB*NTPB*sizeof(float) );
+
+    std::vector<std::vector<float>> distrsCPU;
+    std::vector<float> alphas{ 0.1f, 0.8f, 2.f, 5.f };
+
+    for ( float alpha : alphas )
+    {
+        testGamma<<<NB, NTPB>>>( alpha, 1, distrGPU );
+        std::vector<float> distrCPU( NB*NTPB );
+        cudaMemcpy( distrCPU.data(), distrGPU, NB*NTPB*sizeof(float), cudaMemcpyDeviceToHost );
+        distrsCPU.push_back(std::move(distrCPU));
+    }
+    cudaFree( distrGPU );
+
+    FILE* f = fopen( output, "w" );
+    assert(f);
+    {
+        std::stringstream ss;
+        for ( int j = 0; j < alphas.size(); ++j )
+        {
+            ss << alphas[j];
+            if ( j + 1 != alphas.size() )
+                ss << ',';
+        }
+        fprintf( f, "%s\n", ss.str().data() );
+    }
+    for ( size_t i = 0; i < NB*NTPB; ++i )
+    {
+        std::stringstream ss;
+        for ( int j = 0; j < distrsCPU.size(); ++j )
+        {
+            ss << distrsCPU[j][i];
+            if ( j + 1 != distrsCPU.size() )
+                ss << ',';
+        }
+        fprintf( f, "%s\n", ss.str().data() );
+    }
+    fclose( f );
+}
+
+
 int main(void)
 {
     ex1();
     ex2();
     ex3();
 
-//##############uncomment to verify Gamma distribution############
-//     int NTPB = 512;
-//     int NB = 128;
-//     int tot= NTPB * NB;
-//     cudaMalloc(&rv1, 1000 * tot * sizeof(curandState));
-    
-//     float *distrGPU, *distrCPU;
-    
-//    cudaMalloc( &distrGPU, 1000*tot*sizeof(float) );
-//    distrCPU = (float*)malloc( 1000*tot*sizeof(float) );
-//    testGamma<<<NB, NTPB>>>( 0.5, distrGPU );
-//    cudaMemcpy( distrCPU, distrGPU, 1000*tot*sizeof(float), cudaMemcpyDeviceToHost );
-
-//    FILE* f = fopen( "/tmp/distr.csv", "w" );
-//    assert(f);
-//    for ( size_t i = 0; i < 1000*tot; ++i )
-//    {
-//        fprintf( f, "%f\n", distrCPU[i] );
-//    }
-//    fclose( f );
+    // uncomment to obtain CSV sampled from gamma for different alphas
+//    sampleGamma( "/tmp/gamma.csv" );
 
     return 0;
 }
