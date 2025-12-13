@@ -7,20 +7,10 @@
 #include <iomanip>
 #include <chrono>
 #include <cuda_runtime.h>
-// rho belongs to [-0.9, 0.9]
-// using std::vector;
-
-// __global__ void init_prob(curandState *states){
-//     int lim = blockDim.x * gridDim.x;
-//     for (int k=0; k<1000; k++){ //for every arrengement we do 1000 simulations and we need one RV per unit of time
-//         int idx= blockIdx.x * blockDim.x + threadIdx.x;
-//         curand_init(0,idx + k * lim,0,&states[idx + k * lim]);
-//     }
-// }
 
 
-/// for one block we compute the simulation of one triplet of kappa, sigma ant theta
-__global__ void Euler(float rho, float* result, float *kappas, float *thetas, float *sigmas, float sqrtdt, float nvar){
+/// For one block we compute the simulation of one quadruplet of rho, kappa, sigma and theta
+__global__ void euler(float* result, float *rhos, float *kappas, float *thetas, float *sigmas, float sqrtdt){
 
     extern __shared__ float data[];
     int idx= blockDim.x * blockIdx.x + threadIdx.x;
@@ -30,6 +20,8 @@ __global__ void Euler(float rho, float* result, float *kappas, float *thetas, fl
     float kappa= kappas[blockIdx.x];
     float sigma= sigmas[blockIdx.x];
     float theta= thetas[blockIdx.x];
+    float rho= rhos[blockIdx.x];
+    float nvar = sqrtf(1.f - rho*rho);
     float dt= sqrtdt * sqrtdt;
 
     curandState localState;
@@ -57,10 +49,11 @@ __global__ void Euler(float rho, float* result, float *kappas, float *thetas, fl
         k /= 2;
     }
     if (threadIdx.x == 0){
-        result[blockIdx.x]= data[0];
+        result[blockIdx.x]= data[0] / blockDim.x;
     }
 }
 
+/// Implementation of Gamma distribution as described in https://dl.acm.org/doi/pdf/10.1145/358407.358414
 __device__ float gamma( curandState *state, float a )
 {
     if (a <= 0.0f) return 0.0f;
@@ -107,7 +100,7 @@ __global__ void testGamma(float a, float* result )
     }
 }
 
-__global__ void almost(float rho, float* result, float* kappas, float* thetas, float* sigmas, float sqrtdt, float nvar){
+__global__ void almost(float* result, float *rhos, float* kappas, float* thetas, float* sigmas, float sqrtdt){
 
     extern __shared__ float data[];
     int idx= blockDim.x * blockIdx.x + threadIdx.x;
@@ -115,6 +108,8 @@ __global__ void almost(float rho, float* result, float* kappas, float* thetas, f
     float kappa= kappas[blockIdx.x];
     float sigma= sigmas[blockIdx.x];
     float theta= thetas[blockIdx.x];
+    float rho = rhos[blockIdx.x];
+    float nvar = sqrtf(1.f - rho*rho);
     
     float logS= 0.0;
     float v= 0.1;
@@ -158,206 +153,201 @@ __global__ void almost(float rho, float* result, float* kappas, float* thetas, f
     }
     
     if (threadIdx.x == 0){
-        result[blockIdx.x]= data[0];
+        result[blockIdx.x]= data[0] / blockDim.x;
     }
 }
 
 
+struct CudaData
+{
+    float *kappa = nullptr, *theta = nullptr, *sigma = nullptr, *rho = nullptr;
 
-int main(void){
-    
-    float dt= 1.0/1000.0;
-    float sqrtdt= sqrtf(dt);
+    CudaData( const std::vector<float>& kappas, const std::vector<float>& sigmas, const std::vector<float>& thetas, const std::vector<float>& rhos )
+    {
+        auto size = kappas.size() * sizeof( float );
+        assert( kappas.size() == sigmas.size() && sigmas.size() == thetas.size() && rhos.size() == rhos.size() );
 
-//#########uncomment for question 1##########################
+        cudaMalloc(&kappa, size);
+        cudaMalloc(&sigma, size);
+        cudaMalloc(&theta, size);
+        cudaMalloc(&rho, size);
 
-    // float kappa= 0.5;
-    // float theta= 0.1;
-    // float sigma= 0.3;
-
-
-    // // we will make one rho per thread and one G1, G2 per block or invert
-    // int NTPB = 1024;
-    // int NB = 1;
-    // int tot= NTPB * NB;
-
-    // std::vector<float> kappas;
-    // std::vector<float> sigmas;
-    // std::vector<float> thetas;
-
-    // kappas.push_back(kappa);
-    // sigmas.push_back(sigma);
-    // thetas.push_back(theta);
-
-    // float *gpu_kappa, *gpu_theta, *gpu_sigma;
-
-    // cudaMalloc(&gpu_kappa, sizeof(float));
-    // cudaMalloc(&gpu_sigma, sizeof(float));
-    // cudaMalloc(&gpu_theta, sizeof(float));
-
-    // cudaMemcpy(gpu_kappa, kappas.data(),
-    //         sizeof(float), cudaMemcpyHostToDevice);
-
-    // cudaMemcpy(gpu_sigma, sigmas.data(),
-    //         sizeof(float), cudaMemcpyHostToDevice);
-
-    // cudaMemcpy(gpu_theta, thetas.data(),
-    //         sizeof(float), cudaMemcpyHostToDevice);
-
-
-    
-    // size_t shared= NTPB * sizeof(float);
-    // cudaEvent_t start, stop;
-    // cudaEventCreate(&start);
-    // cudaEventCreate(&stop);
-
-    // for (float rho= -0.9; rho<0.9; rho +=0.2){
-    //     float nvar= sqrtf(1 - rho*rho);
-    //     float *cusum;
-    //     cudaMalloc(&cusum, sizeof(float));
-    //     cudaMemset(cusum, 0, sizeof(float));
-
-    //     cudaEventRecord(start);
-    //     // Euler<<<NB, NTPB, shared>>>(rho, cusum, gpu_kappa, gpu_theta, gpu_sigma, sqrtdt, nvar);
-    //     almost<<<NB, NTPB, shared>>>(rho, cusum, gpu_kappa, gpu_theta, gpu_sigma, sqrtdt, nvar);
-    //     cudaEventRecord(stop);
-    //     cudaEventSynchronize(stop);
-    //     float elapsed= 0;
-    //     cudaEventElapsedTime(&elapsed, start, stop);
-        
-    //     float sum;
-    //     cudaMemcpy(&sum, cusum, sizeof(float), cudaMemcpyDeviceToHost);
-    //     sum /= tot;
-
-    //     printf("for a value rho of %f we get a result E[(S-1)+] %f in %.3f ms\n", rho, sum, elapsed);
-    //     cudaFree(cusum);
-     
-    // }
-    // cudaFree(gpu_kappa);
-    // cudaFree(gpu_theta);
-    // cudaFree(gpu_sigma);
-
-
-
-//#################uncomment for ex3###########################
-
-    std::vector<float> kappas;
-    std::vector<float> sigmas;
-    std::vector<float> thetas;
-    for (float kappa= 0.1; kappa<10; kappa += 0.5){
-        for (float sigma= 0.1; sigma< 1; sigma += 0.05){
-            for (float theta= 0.01; theta< 0.5; theta += 0.025){
-                if (20 * kappa * theta > sigma * sigma){
-                    kappas.push_back(kappa);
-                    sigmas.push_back(sigma);
-                    thetas.push_back(theta);
-                }
-            }
-        }
+        cudaMemcpy(kappa, kappas.data(), size, cudaMemcpyHostToDevice);
+        cudaMemcpy(sigma, sigmas.data(), size, cudaMemcpyHostToDevice);
+        cudaMemcpy(theta, thetas.data(), size, cudaMemcpyHostToDevice);
+        cudaMemcpy(rho, rhos.data(), size, cudaMemcpyHostToDevice);
     }
 
+    ~CudaData()
+    {
+        cudaFree(kappa);
+        cudaFree(theta);
+        cudaFree(sigma);
+        cudaFree(rho);
+    }
+};
 
-    int N_size= kappas.size();
+float mse( const std::vector<float> &x, const std::vector<float>& y )
+{
+    assert( x.size() == y.size() );
+    float res = 0.f;
+    for (int i = 0; i < x.size(); i++)
+        res += ( x[i] - y[i] )*( x[i] - y[i] );
+    res = res / x.size();
+    return res;
+}
 
-    float *gpu_kappa, *gpu_theta, *gpu_sigma;
+std::pair<float, float> meanvar( const std::vector<float> &x )
+{
+    float mean = 0, mean2 = 0;
+    for ( float v : x )
+    {
+        mean += v;
+        mean2 += v*v;
+    }
+    mean /= x.size();
+    mean2 /= x.size();
 
-    cudaMalloc(&gpu_kappa, N_size * sizeof(float));
-    cudaMalloc(&gpu_sigma, N_size * sizeof(float));
-    cudaMalloc(&gpu_theta, N_size * sizeof(float));
+    return {mean, mean2 - mean*mean};
+}
 
-    cudaMemcpy(gpu_kappa, kappas.data(),
-           N_size * sizeof(float), cudaMemcpyHostToDevice);
 
-    cudaMemcpy(gpu_sigma, sigmas.data(),
-            N_size * sizeof(float), cudaMemcpyHostToDevice);
 
-    cudaMemcpy(gpu_theta, thetas.data(),
-            N_size * sizeof(float), cudaMemcpyHostToDevice);
+void ex1()
+{
+    float dt= 1.0/1000.0;
+    float sqrtdt= sqrtf(dt);
+    float kappa= 0.5;
+    float theta= 0.1;
+    float sigma= 0.3;
 
-    int NTPB= 512;
-    int NB= N_size;
-    size_t shared= NTPB * sizeof(float);
+    int NTPB = 1024;
+    int NB = 10;        // for this exercise the number of blocks is the same as the number of values for rho
+    size_t shared = NTPB * sizeof(float);
+
+    std::vector<float> kappas( NB, kappa );
+    std::vector<float> sigmas( NB, sigma );
+    std::vector<float> thetas( NB, theta );
+    std::vector<float> rhos;
+    for ( int irho = 1; irho < NB + 1; ++irho )
+        rhos.push_back((float)irho / (float)NB);
+
+    CudaData cudaData( kappas, sigmas, thetas, rhos );
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    std::ofstream out("results.csv");
-    out << "kappa,theta,sigma,rho,NTPB,time,euler,almost_exact,dt,result\n";
-    
-    printf("computing begins\n");
+    float* gpu_result;
+    cudaMalloc(&gpu_result, NB*sizeof(float));
+    cudaMemset(gpu_result, 0, NB*sizeof(float));
+    cudaEventRecord(start);
+    euler<<<NB, NTPB, shared>>>(gpu_result, cudaData.rho, cudaData.kappa, cudaData.theta, cudaData.sigma, sqrtdt);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float elapsed= 0;
+    cudaEventElapsedTime(&elapsed, start, stop);
 
-    for (float rho= -0.9; rho< 0.9; rho += 0.2){
-        float nvar= sqrtf(1 - rho*rho);
-        float *result;
-        cudaMalloc(&result, N_size * sizeof(float));
-        cudaMemset(result, 0, N_size * sizeof(float));
+    std::vector<float> result( NB );
+    cudaMemcpy(result.data(), gpu_result, NB*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaFree( gpu_result );
 
-        cudaEventRecord(start);
-        almost<<<NB, NTPB, shared>>>(rho, result, gpu_kappa, gpu_theta, gpu_sigma, sqrtdt, nvar);
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        float almost_elapsed= 0;
-        cudaEventElapsedTime(&almost_elapsed, start, stop);
-        cudaDeviceSynchronize();
+    printf("[Exercise 1] elapsed time: %fms\n", elapsed);
+    for ( int i = 0; i < NB; ++i )
+        printf("[Exercise 1] for a value rho of %f we get a result E[(S-1)+]: %f\n", rhos[i], result[i]);
+}
 
-        float* resCPU= (float*)malloc(N_size * sizeof(float));
-        cudaMemcpy(resCPU, result, N_size*sizeof(float), cudaMemcpyDeviceToHost);
-        cudaFree(result);
-
-
-        for (int i = 0; i < N_size; i++){
-            out << kappas[i] << ","
-                << thetas[i] << ","
-                << sigmas[i] << ","
-                << rho << ","
-                << NTPB << ","
-                << almost_elapsed << ","
-                << 0 << ","
-                << 1 << ","
-                << dt << ","
-                << resCPU[i] << ",\n";
+void ex3()
+{
+    float dt= 1.0/1000.0;
+    float sqrtdt= sqrtf(dt);
+    std::vector<float> kappas;
+    std::vector<float> sigmas;
+    std::vector<float> thetas;
+    std::vector<float> rhos;
+    for (float rho = 0.1; rho < 1; rho += 0.1 ){
+        for (float kappa= 0.1; kappa<10; kappa += 0.5){
+            for (float sigma= 0.1; sigma< 1; sigma += 0.05){
+                for (float theta= 0.01; theta< 0.5; theta += 0.025){
+                    if (20 * kappa * theta > sigma * sigma){
+                        kappas.push_back(kappa);
+                        sigmas.push_back(sigma);
+                        thetas.push_back(theta);
+                        rhos.push_back(rho);
+                    }
+                }
+            }
         }
-
-
-        float *resultE;
-        cudaMalloc(&resultE, N_size * sizeof(float));
-        cudaMemset(resultE, 0, N_size * sizeof(float));
-
-        cudaEventRecord(start);
-        Euler<<<NB, NTPB, shared>>>(rho, resultE, gpu_kappa, gpu_theta, gpu_sigma, sqrtdt, nvar);
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        float euler_elapsed= 0;
-        cudaEventElapsedTime(&euler_elapsed, start, stop);
-        cudaDeviceSynchronize();
-
-        float* eulerCPU= (float*)malloc(N_size * sizeof(float));
-        cudaMemcpy(eulerCPU, resultE, N_size*sizeof(float), cudaMemcpyDeviceToHost);
-        cudaFree(resultE);
-        for (int i = 0; i < N_size; i++){
-            out << kappas[i] << ","
-                << thetas[i] << ","
-                << sigmas[i] << ","
-                << rho << ","
-                << NTPB << ","
-                << euler_elapsed << ","
-                << 1 << ","
-                << 0 << ","
-                << dt << ","
-                << eulerCPU[i] << ",\n";
-        }
-        free(eulerCPU);
-        printf("results found in time %f ms for euler and %f ms for the almost exact methode\n", euler_elapsed, almost_elapsed);
-        
     }
-    out.close();
+    int NTPB = 1024;
+    int NB = kappas.size();   // for this exercise, each combination of parameters corresponds to a block
+    size_t shared = NTPB * sizeof(float);
 
-    cudaFree(gpu_kappa);
-    cudaFree(gpu_sigma);
-    cudaFree(gpu_theta);
+    CudaData cudaData( kappas, sigmas, thetas, rhos );
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    float* gpu_result;
+    cudaMalloc(&gpu_result, NB*sizeof(float));
+    cudaMemset(gpu_result, 0, NB*sizeof(float));
+    cudaEventRecord(start);
+    euler<<<NB, NTPB, shared>>>(gpu_result, cudaData.rho, cudaData.kappa, cudaData.theta, cudaData.sigma, sqrtdt);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float eulerElapsed= 0;
+    cudaEventElapsedTime(&eulerElapsed, start, stop);
+    cudaDeviceSynchronize();
+
+    std::vector<float> eulerResult( NB );
+    cudaMemcpy(eulerResult.data(), gpu_result, NB*sizeof(float), cudaMemcpyDeviceToHost);
 
 
+    cudaMemset(gpu_result, 0, NB*sizeof(float));
+    cudaEventRecord(start);
+    almost<<<NB, NTPB, shared>>>(gpu_result, cudaData.rho, cudaData.kappa, cudaData.theta, cudaData.sigma, sqrtdt);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float almostElapsed= 0;
+    cudaEventElapsedTime(&almostElapsed, start, stop);
+    cudaDeviceSynchronize();
+
+    std::vector<float> almostResult( NB );
+    cudaMemcpy(almostResult.data(), gpu_result, NB*sizeof(float), cudaMemcpyDeviceToHost);
+    auto [almostMean, almostVar] = meanvar( almostResult );
+
+    printf("[Exercise 3] elapsed time for Euler method: %fms\n", eulerElapsed);
+    printf("[Exercise 3] elapsed time for almost exact method: %fms\n", almostElapsed);
+    printf("[Exercise 3] mean squared distance between two methods: %f (vs mean value %f and variance %f)\n", mse( eulerResult, almostResult ), almostMean, almostVar);
+
+
+    // now change dt and redo
+    dt = 1.f/30.f;
+    sqrtdt = sqrtf( dt );
+
+    cudaMemset(gpu_result, 0, NB*sizeof(float));
+    cudaEventRecord(start);
+    almost<<<NB, NTPB, shared>>>(gpu_result, cudaData.rho, cudaData.kappa, cudaData.theta, cudaData.sigma, sqrtdt);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float almost2Elapsed= 0;
+    cudaEventElapsedTime(&almost2Elapsed, start, stop);
+    cudaDeviceSynchronize();
+
+    std::vector<float> almost2Result( NB );
+    cudaMemcpy(almost2Result.data(), gpu_result, NB*sizeof(float), cudaMemcpyDeviceToHost);
+    cudaFree( gpu_result );
+
+    printf("[Exercise 3] elapsed time for almost exact method with dt = 1/30: %fms\n", almost2Elapsed);
+    printf("[Exercise 3] mean squared distance between almost exact method with different dt: %f\n", mse(almostResult, almost2Result));
+}
+
+
+int main(void)
+{
+    ex1();
+    ex3();
 
 //##############uncomment to verify Gamma distribution############
 //     int NTPB = 512;
