@@ -17,15 +17,19 @@ __global__ void euler(float* result, float *rhos, float *kappas, float *thetas, 
     
     float S= 1.0;
     float v= 0.1;
+
+    //we select the values to test with the block ID
     float kappa= kappas[blockIdx.x];
     float sigma= sigmas[blockIdx.x];
     float theta= thetas[blockIdx.x];
     float rho= rhos[blockIdx.x];
+
     float nvar = sqrtf(1.f - rho*rho);
     float dt= sqrtdt * sqrtdt;
 
     curandState localState;
     curand_init(42, idx, 0, &localState);
+    //computation of the steps
     for (float i=0; i<1; i+= dt){
 
         float g1= curand_normal(&localState);
@@ -39,7 +43,7 @@ __global__ void euler(float* result, float *rhos, float *kappas, float *thetas, 
 
     data[threadIdx.x] = res;
     __syncthreads();
-
+    //reduction on one thread of the block
     int k= blockDim.x / 2;
     while (k!=0){
         if (threadIdx.x < k){
@@ -48,6 +52,7 @@ __global__ void euler(float* result, float *rhos, float *kappas, float *thetas, 
         __syncthreads();
         k /= 2;
     }
+    //transfer to the result array
     if (threadIdx.x == 0){
         result[blockIdx.x]= data[0] / blockDim.x;
     }
@@ -60,9 +65,8 @@ __device__ float gamma( curandState *state, float a )
 
     float boost = 1;
     if (a < 1){
-        boost= curand_uniform(state);
-        
-        boost= powf(boost, 1.0/a);
+        boost_rv= curand_uniform(state);
+        boost= powf(boost_rv, 1.0/a);
         a += 1;
     }
 
@@ -107,9 +111,8 @@ __global__ void exact(float* result, float* rhos, float* kappas, float* thetas, 
     float sigma= sigmas[blockIdx.x];
     float theta= thetas[blockIdx.x];
     float rho= rhos[blockIdx.x];
+
     float nvar = sqrtf(1.f - rho*rho);
-
-
     float v= 0.1;
     float sigma_square= sigma * sigma;
     float dt= sqrtdt * sqrtdt;
@@ -124,9 +127,7 @@ __global__ void exact(float* result, float* rhos, float* kappas, float* thetas, 
     for (float t= 0; t< 1; t+= dt){
         float lambda= lambdaCoeff * v;
         float N= curand_poisson(&localState, lambda);
-
         float vdt = sigma_square * (1 - exp_k) * gamma(&localState, d + N) / (2 * kappa);
-
         vI += 0.5f*(v + vdt)*dt;
         v = vdt;
     }
