@@ -442,6 +442,99 @@ void ex3()
     printf("[Exercise 3] mean squared distance between almost exact method with different dt: %f\n", mse(almostResult, almost2Result));
 }
 
+void timedep( const char* output )
+{
+    std::vector<float> kappas;
+    std::vector<float> sigmas;
+    std::vector<float> thetas;
+    std::vector<float> rhos;
+    for (float rho = 0.1; rho < 1; rho += 0.1 ){
+        for (float kappa= 0.1; kappa<10; kappa += 0.5){
+            for (float sigma= 0.1; sigma< 1; sigma += 0.05){
+                for (float theta= 0.01; theta< 0.5; theta += 0.025){
+                    if (20 * kappa * theta > sigma * sigma){
+                        kappas.push_back(kappa);
+                        sigmas.push_back(sigma);
+                        thetas.push_back(theta);
+                        rhos.push_back(rho);
+                    }
+                }
+            }
+        }
+    }
+    int NTPB = 1024;
+    int NB = kappas.size();
+    size_t shared = NTPB * sizeof(float);
+
+    std::ofstream out( output );
+    out << "kappa,theta,sigma,rho,NTPB,time,euler,almost_exact,dt,result\n";
+    for (float dt = 1.0; dt>=1/10000.0; dt = dt/2.0)
+    {
+        auto sqrtdt = sqrtf( dt );
+
+        CudaData cudaData( kappas, sigmas, thetas, rhos );
+
+        cudaEvent_t start, stop;
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+
+        float* gpu_result;
+        cudaMalloc(&gpu_result, NB*sizeof(float));
+        cudaMemset(gpu_result, 0, NB*sizeof(float));
+        cudaEventRecord(start);
+        euler<<<NB, NTPB, shared>>>(gpu_result, cudaData.rho, cudaData.kappa, cudaData.theta, cudaData.sigma, sqrtdt);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float eulerElapsed= 0;
+        cudaEventElapsedTime(&eulerElapsed, start, stop);
+        cudaDeviceSynchronize();
+
+        std::vector<float> eulerResult( NB );
+        cudaMemcpy(eulerResult.data(), gpu_result, NB*sizeof(float), cudaMemcpyDeviceToHost);
+
+
+        cudaMemset(gpu_result, 0, NB*sizeof(float));
+        cudaEventRecord(start);
+        almost<<<NB, NTPB, shared>>>(gpu_result, cudaData.rho, cudaData.kappa, cudaData.theta, cudaData.sigma, sqrtdt);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float almostElapsed= 0;
+        cudaEventElapsedTime(&almostElapsed, start, stop);
+        cudaDeviceSynchronize();
+
+        std::vector<float> almostResult( NB );
+        cudaMemcpy(almostResult.data(), gpu_result, NB*sizeof(float), cudaMemcpyDeviceToHost);
+        cudaFree( gpu_result );
+
+        for ( size_t i = 0; i < rhos.size(); ++i )
+        {
+            out << kappas[i] << ","
+                << thetas[i] << ","
+                << sigmas[i] << ","
+                << rhos[i] << ","
+                << NTPB << ","
+                << almostElapsed << ","
+                << 0 << ","
+                << 1 << ","
+                << dt << ","
+                << almostResult[i] << ",\n";
+        }
+        for ( size_t i = 0; i < rhos.size(); ++i )
+        {
+            out << kappas[i] << ","
+                << thetas[i] << ","
+                << sigmas[i] << ","
+                << rhos[i] << ","
+                << NTPB << ","
+                << eulerElapsed << ","
+                << 1 << ","
+                << 0 << ","
+                << dt << ","
+                << eulerResult[i] << ",\n";
+        }
+    }
+}
+
 
 void sampleGamma( const char* output )
 {
@@ -495,6 +588,9 @@ int main(void)
     ex1();
     ex2();
     ex3();
+
+    // uncomment to obtain CSV for the plots in the presentation
+//    timedep( "/tmp/result.csv" );
 
     // uncomment to obtain CSV sampled from gamma for different alphas
 //    sampleGamma( "/tmp/gamma.csv" );
